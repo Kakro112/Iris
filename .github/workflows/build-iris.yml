@@ -33,12 +33,33 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
 
+      # JitPack cannot build VolmLib (Java 25 toolchain, no jitpack.yml), so the
+      # pinned com.github.VolmitSoftware.VolmLib artifacts are never served. The
+      # Iris build already supports a source checkout via VOLMLIB_DIR / a sibling
+      # VolmLib directory: gradle/volmlib-resolution.settings.gradle substitutes
+      # the packaging plugin and volmlib-shared with the matching projects.
+      - name: Fetch matching VolmLib sources
+        shell: bash
+        run: |
+          rev=$(grep -oE 'volmlib-shared:[0-9a-f]+' gradle.properties | head -1 | cut -d: -f2)
+          if [ -z "$rev" ]; then
+            echo "Could not read volmLibCoordinate revision from gradle.properties"
+            exit 1
+          fi
+          echo "VolmLib revision: $rev"
+          curl -fsSL -o /tmp/volmlib.tar.gz "https://codeload.github.com/VolmitSoftware/VolmLib/tar.gz/$rev"
+          mkdir -p "$GITHUB_WORKSPACE/../VolmLib"
+          tar -xzf /tmp/volmlib.tar.gz --strip-components=1 -C "$GITHUB_WORKSPACE/../VolmLib"
+          test -f "$GITHUB_WORKSPACE/../VolmLib/settings.gradle"
+
       - name: Build Paper plugin
         shell: bash
+        env:
+          VOLMLIB_DIR: ${{ github.workspace }}/../VolmLib
         run: |
           set -o pipefail
           java -version 2>&1 | tee gradle-build.log
-          ./gradlew buildBukkit --no-daemon -PuseLocalVolmLib=false --stacktrace 2>&1 | tee -a gradle-build.log
+          ./gradlew buildBukkit --no-daemon --stacktrace 2>&1 | tee -a gradle-build.log
 
       - name: Report failure details
         if: failure()
