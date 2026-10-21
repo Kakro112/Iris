@@ -1,8 +1,12 @@
 
-name: Build Iris Paper 26.2
+name: Build Iris for Paper 26.2
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
 
 permissions:
   contents: read
@@ -13,11 +17,11 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Checkout Iris source
+      - name: Checkout Iris 26.2 release
         uses: actions/checkout@v4
         with:
           repository: VolmitSoftware/Iris
-          ref: b18681a
+          ref: 4.1.1-26.1.2-26.2
           fetch-depth: 1
 
       - name: Set up Java 25
@@ -27,22 +31,44 @@ jobs:
           java-version: '25'
           cache: gradle
 
-      - name: Build Iris
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Build Paper plugin
+        run: ./gradlew buildBukkit --no-daemon
+
+      - name: Export all platform artifacts if needed
+        if: failure()
         run: ./gradlew buildAllToOut --no-daemon
 
-      - name: Prepare Paper JAR
+      - name: Locate generated JARs
+        if: always()
+        run: |
+          echo "Searching for generated JAR files..."
+          find . ../PluginOuts -type f -name '*.jar' 2>/dev/null || true
+
+      - name: Collect Paper plugin JAR
+        if: success()
         shell: bash
         run: |
           mkdir -p artifacts
-          find ../PluginOuts -maxdepth 1 -type f \
+
+          find ../PluginOuts . \
+            -type f \
             -name '*CraftBukkit*.jar' \
-            -print -exec cp {} artifacts/ \;
-          if ! find artifacts -name '*.jar' -print -quit | grep -q .; then
-            echo "ERROR: No Paper/CraftBukkit JAR was generated."
+            ! -path './artifacts/*' \
+            -exec cp {} artifacts/ \; 2>/dev/null || true
+
+          if [ -z "$(find artifacts -type f -name '*.jar' -print -quit)" ]; then
+            echo "No CraftBukkit plugin JAR found."
+            echo "Check the Locate generated JARs step for the actual output path."
             exit 1
           fi
 
-      - name: Upload Paper JAR
+          ls -lh artifacts
+
+      - name: Upload Paper plugin
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Iris-Paper-26.2
