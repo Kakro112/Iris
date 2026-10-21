@@ -6,6 +6,7 @@ on:
     branches:
       - main
       - master
+      - arena/d71f50a6-iris
 
 permissions:
   contents: read
