@@ -1,24 +1,19 @@
 
-name: Build Iris for Paper 26.2
+name: Build Iris Paper 26.2
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-      - master
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build Paper plugin
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
     steps:
-      - name: Checkout Iris 26.2 source
+      - name: Checkout Iris source
         uses: actions/checkout@v4
         with:
           repository: VolmitSoftware/Iris
@@ -32,16 +27,25 @@ jobs:
           java-version: '25'
           cache: gradle
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
+      - name: Build Iris
+        run: ./gradlew buildAllToOut --no-daemon
 
-      - name: Build Bukkit/Paper plugin
-        run: ./gradlew buildBukkit --no-daemon
+      - name: Prepare Paper JAR
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          find ../PluginOuts -maxdepth 1 -type f \
+            -name '*CraftBukkit*.jar' \
+            -print -exec cp {} artifacts/ \;
+          if ! find artifacts -name '*.jar' -print -quit | grep -q .; then
+            echo "ERROR: No Paper/CraftBukkit JAR was generated."
+            exit 1
+          fi
 
-      - name: Upload Paper plugin JAR
+      - name: Upload Paper JAR
         uses: actions/upload-artifact@v4
         with:
           name: Iris-Paper-26.2
-          path: ../PluginOuts/*CraftBukkit*26.2*.jar
-          if-no-files-found: warn
+          path: artifacts/*.jar
+          if-no-files-found: error
           retention-days: 14
