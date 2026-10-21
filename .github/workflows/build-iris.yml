@@ -5,73 +5,87 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - main
       - master
+    paths:
+      - '.github/workflows/build-paper.yml'
+      - '**/*.java'
+      - '**/*.gradle'
+      - '**/*.gradle.kts'
+      - 'gradle.properties'
+      - 'gradle/**'
 
 permissions:
   contents: read
 
+concurrency:
+  group: iris-paper-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
+    name: Compile Paper plugin
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
-      - name: Checkout Iris 26.2 release
+      - name: Checkout Iris
         uses: actions/checkout@v4
-        with:
-          repository: VolmitSoftware/Iris
-          ref: 4.1.1-26.1.2-26.2
-          fetch-depth: 1
 
-      - name: Set up Java 25
+      - name: Install JDK 25
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '25'
           cache: gradle
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
+      - name: Prepare Gradle
+        uses: gradle/actions/setup-gradle@v4
 
-      - name: Build Paper plugin
-        run: ./gradlew buildBukkit --no-daemon
-
-      - name: Export all platform artifacts if needed
-        if: failure()
-        run: ./gradlew buildAllToOut --no-daemon
-
-      - name: Locate generated JARs
-        if: always()
-        run: |
-          echo "Searching for generated JAR files..."
-          find . ../PluginOuts -type f -name '*.jar' 2>/dev/null || true
-
-      - name: Collect Paper plugin JAR
-        if: success()
+      - name: Build Bukkit/Paper plugin
         shell: bash
         run: |
-          mkdir -p artifacts
+          chmod +x ./gradlew
+          ./gradlew buildBukkit \
+            --no-daemon \
+            --no-parallel \
+            --max-workers=2 \
+            -PuseLocalVolmLib=false \
+            -PpluginOutDirectory=build/ci-output \
+            --stacktrace
 
-          find ../PluginOuts . \
-            -type f \
-            -name '*CraftBukkit*.jar' \
-            ! -path './artifacts/*' \
-            -exec cp {} artifacts/ \; 2>/dev/null || true
+      - name: Verify JAR and calculate SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
 
-          if [ -z "$(find artifacts -type f -name '*.jar' -print -quit)" ]; then
-            echo "No CraftBukkit plugin JAR found."
-            echo "Check the Locate generated JARs step for the actual output path."
+          jars=(build/ci-output/*.jar)
+
+          if (( ${#jars[@]} == 0 )); then
+            echo "::error::No Paper plugin JAR was produced."
+            echo "Checking possible Gradle output directories:"
+            find . -type f -name '*.jar' \
+              -not -path './.gradle/*' || true
             exit 1
           fi
 
-          ls -lh artifacts
+          sha256sum "${jars[@]}" \
+            | tee build/ci-output/SHA256SUMS.txt
 
-      - name: Upload Paper plugin
-        if: success()
+          {
+            echo "## Iris Paper build"
+            echo ""
+            echo "Commit: \`${GITHUB_SHA}\`"
+            echo ""
+            echo "JAR files and SHA-256 checksums are available in the artifact."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload compiled plugin
         uses: actions/upload-artifact@v4
         with:
           name: Iris-Paper-26.2
-          path: artifacts/*.jar
+          path: |
+            build/ci-output/*.jar
+            build/ci-output/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14
