@@ -40,10 +40,20 @@ jobs:
       # the packaging plugin and volmlib-shared with the matching projects.
       - name: Fetch matching VolmLib sources
         shell: bash
+        env:
+          # gradle.properties pins 6c54bbcd, but Iris 4.1.1-26.2 compiles against
+          # art.arcane.volmlib.util.event.ProtectionProbe, which VolmLib only added in
+          # 2829806f (the maintainers build with a live VolmLib checkout; the published
+          # pin is stale). 2829806f is the first VolmLib commit with that class and the
+          # last one published before the Iris 4.1.1-26.2 release.
+          VOLMLIB_REV: 2829806f047b35735b29375930e3777d431480b4
         run: |
-          rev=$(grep -oE 'volmlib-shared:[0-9a-f]+' gradle.properties | head -1 | cut -d: -f2)
+          rev="$VOLMLIB_REV"
           if [ -z "$rev" ]; then
-            echo "Could not read volmLibCoordinate revision from gradle.properties"
+            rev=$(grep -oE 'volmlib-shared:[0-9a-f]+' gradle.properties | head -1 | cut -d: -f2)
+          fi
+          if [ -z "$rev" ]; then
+            echo "Could not determine VolmLib revision"
             exit 1
           fi
           echo "VolmLib revision: $rev"
