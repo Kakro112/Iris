@@ -52,6 +52,36 @@ jobs:
           tar -xzf /tmp/volmlib.tar.gz --strip-components=1 -C "$GITHUB_WORKSPACE/../VolmLib"
           test -f "$GITHUB_WORKSPACE/../VolmLib/settings.gradle"
 
+      # com.willfp:eco only exists on repo.auxilor.io, which goes down behind
+      # Cloudflare 5xx now and then and breaks dependency resolution hard. When
+      # it is unreachable, build the pinned eco-api release from source (its
+      # :eco-api module publishes exactly com.willfp:eco:<version> to mavenLocal)
+      # and let Iris resolve it from there with -PuseMavenLocal=true.
+      - name: Check Auxilor Maven repo
+        id: auxilor
+        shell: bash
+        run: |
+          eco_ver=$(grep -oE 'eco = "[^"]+"' gradle/libs.versions.toml | head -1 | cut -d'"' -f2)
+          echo "eco=$eco_ver" >> "$GITHUB_OUTPUT"
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 \
+            "https://repo.auxilor.io/repository/maven-public/com/willfp/eco/$eco_ver/eco-$eco_ver.pom" || echo 000)
+          echo "http=$code" >> "$GITHUB_OUTPUT"
+          echo "Auxilor repo HTTP status for eco $eco_ver: $code"
+
+      - name: Build eco API from source (Auxilor outage fallback)
+        if: steps.auxilor.outputs.http != '200'
+        shell: bash
+        run: |
+          eco_ver="${{ steps.auxilor.outputs.eco }}"
+          echo "Building com.willfp:eco:$eco_ver from source"
+          git clone --depth 1 --branch "$eco_ver" https://github.com/Auxilor/eco.git /tmp/eco
+          # The downed host is unscoped in eco's build, so its 5xx errors abort
+          # resolution of unrelated artifacts. Remove it; nothing else needs it.
+          sed -i '/repo\.auxilor\.io/d' /tmp/eco/build.gradle.kts
+          cd /tmp/eco
+          ./gradlew :eco-api:publishToMavenLocal --no-daemon --stacktrace
+          ls -la "$HOME/.m2/repository/com/willfp/eco/$eco_ver/"
+
       - name: Build Paper plugin
         shell: bash
         env:
@@ -59,7 +89,15 @@ jobs:
         run: |
           set -o pipefail
           java -version 2>&1 | tee gradle-build.log
-          ./gradlew buildBukkit --no-daemon --stacktrace 2>&1 | tee -a gradle-build.log
+          for attempt in 1 2 3; do
+            echo "=== Build attempt $attempt ===" | tee -a gradle-build.log
+            if ./gradlew buildBukkit --no-daemon -PuseMavenLocal=true --stacktrace 2>&1 | tee -a gradle-build.log; then
+              exit 0
+            fi
+            echo "Attempt $attempt failed, retrying..." | tee -a gradle-build.log
+            sleep 20
+          done
+          exit 1
 
       - name: Report failure details
         if: failure()
@@ -77,11 +115,26 @@ jobs:
               raise SystemExit(0)
 
           with open(path, 'rb') as handle:
-              log = handle.read().decode('utf-8', 'replace')[-20000:]
+              log = handle.read().decode('utf-8', 'replace')
+
+          # Drop stack-trace frames so the error chain fits in annotations.
+          kept = []
+          for line in log.splitlines(keepends=True):
+              stripped = line.lstrip()
+              if stripped.startswith('at ') or stripped.startswith('... '):
+                  continue
+              kept.append(line)
+          text = ''.join(kept)
+          for marker in ('FAILURE:', 'What went wrong'):
+              idx = text.rfind(marker)
+              if idx != -1:
+                  text = text[idx:]
+                  break
+          text = text[-6000:]
 
           chunks = []
           current = ''
-          for line in log.splitlines(keepends=True):
+          for line in text.splitlines(keepends=True):
               encoded_line = encode(line)
               if len(current) + len(encoded_line) > 3500:
                   chunks.append(current)
@@ -93,11 +146,11 @@ jobs:
 
           chunks = chunks[-9:]
           for index, chunk in enumerate(chunks, 1):
-              print(f'::error title=Gradle log {index}/{len(chunks)}::{chunk}')
+              print(f'::error title=Gradle error {index}/{len(chunks)}::{chunk}')
 
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
-              summary.write('## Gradle failure tail\n\n```\n')
-              summary.write(log[-6000:])
+              summary.write('## Gradle failure\n\n```\n')
+              summary.write(text[-4000:])
               summary.write('\n```\n')
           PYEOF
 
