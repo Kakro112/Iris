@@ -1,91 +1,83 @@
 
-name: Build Iris for Paper 26.2
+name: Compile Paper plugin
 
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - master
-    paths:
-      - '.github/workflows/build-paper.yml'
-      - '**/*.java'
-      - '**/*.gradle'
-      - '**/*.gradle.kts'
-      - 'gradle.properties'
-      - 'gradle/**'
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: iris-paper-${{ github.ref }}
-  cancel-in-progress: false
+  group: iris-paper-build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
-    name: Compile Paper plugin
+    name: Build Iris Bukkit plugin
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Iris
         uses: actions/checkout@v4
+        with:
+          path: Iris
 
-      - name: Install JDK 25
+      - name: Checkout VolmLib
+        uses: actions/checkout@v4
+        with:
+          repository: VolmitSoftware/VolmLib
+          ref: master
+          path: VolmLib
+
+      - name: Set up Java 25
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '25'
           cache: gradle
+          cache-dependency-path: Iris/**/*.gradle*
 
-      - name: Prepare Gradle
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build Bukkit/Paper plugin
-        shell: bash
+      - name: Build Bukkit plugin
+        working-directory: Iris
+        env:
+          VOLMLIB_DIR: ${{ github.workspace }}/VolmLib
         run: |
           chmod +x ./gradlew
+
           ./gradlew buildBukkit \
             --no-daemon \
             --no-parallel \
             --max-workers=2 \
-            -PuseLocalVolmLib=false \
+            -PuseLocalVolmLib=true \
+            -PlocalVolmLibDirectory="$VOLMLIB_DIR" \
             -PpluginOutDirectory=build/ci-output \
             --stacktrace
 
-      - name: Verify JAR and calculate SHA-256
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-
-          jars=(build/ci-output/*.jar)
-
-          if (( ${#jars[@]} == 0 )); then
-            echo "::error::No Paper plugin JAR was produced."
-            echo "Checking possible Gradle output directories:"
-            find . -type f -name '*.jar' \
-              -not -path './.gradle/*' || true
-            exit 1
-          fi
-
-          sha256sum "${jars[@]}" \
-            | tee build/ci-output/SHA256SUMS.txt
-
-          {
-            echo "## Iris Paper build"
-            echo ""
-            echo "Commit: \`${GITHUB_SHA}\`"
-            echo ""
-            echo "JAR files and SHA-256 checksums are available in the artifact."
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload compiled plugin
+      - name: Upload plugin JAR
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: Iris-Paper-26.2
-          path: |
-            build/ci-output/*.jar
-            build/ci-output/SHA256SUMS.txt
+          name: Iris-Bukkit-${{ github.sha }}
+          path: Iris/build/ci-output/*.jar
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Iris-build-diagnostics-${{ github.run_id }}
+          path: |
+            Iris/**/build/reports/**
+            Iris/**/build/test-results/**
+            Iris/**/build/tmp/**
+          if-no-files-found: ignore
+          retention-days: 7
